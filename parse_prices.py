@@ -1,19 +1,20 @@
 """Парсер цен: собирает товары с сайта и сохраняет их в CSV и Excel.
 
-По умолчанию работает на демо-сайте https://books.toscrape.com —
-он создан специально для обучения парсингу и не блокирует запросы.
-Под реальный сайт меняются только SELECTORS ниже и стартовый URL.
+Под каждый сайт создаётся свой JSON-конфиг в папке configs/: адрес каталога
+и селекторы (где на странице цена, ссылка, название). Код при этом не меняется.
 
 Запуск:
     .\\.venv\\Scripts\\python.exe parse_prices.py
+    .\\.venv\\Scripts\\python.exe parse_prices.py --config configs/books.json
+    .\\.venv\\Scripts\\python.exe parse_prices.py --config configs/webscraper-laptops.json --out ноутбуки
     .\\.venv\\Scripts\\python.exe parse_prices.py --pages 5 --delay 0.5
-    .\\.venv\\Scripts\\python.exe parse_prices.py --start-url https://example.com/catalog --out конкуренты
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import re
 import sys
@@ -40,9 +41,9 @@ DEFAULT_START_URL = "https://books.toscrape.com/"
 
 # ---------------------------------------------------------------- настройки
 
-# Селекторы под конкретный сайт. Для нового сайта правится только этот блок:
-# открыть страницу в браузере, ПКМ -> «Посмотреть код» и подставить классы.
-SELECTORS = {
+# Селекторы по умолчанию (сайт books.toscrape.com).
+# Для нового сайта создаётся свой JSON в configs/ и передаётся через --config.
+DEFAULT_SELECTORS = {
     "card": "article.product_pod",      # карточка товара
     "title": "h3 a",                    # название
     "title_attr": "title",              # откуда брать название: атрибут или текст
@@ -55,6 +56,27 @@ SELECTORS = {
 }
 
 RATING_WORDS = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
+
+
+def load_config(path: str | None) -> dict:
+    """Читает JSON-конфиг сайта. Пустой путь = настройки по умолчанию."""
+    if not path:
+        return {}
+    config_path = Path(path)
+    if not config_path.exists():
+        raise SystemExit(f"Файл настроек не найден: {config_path}")
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Ошибка в JSON {config_path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"В {config_path} должен быть объект JSON")
+    return data
+
+
+def pick(node: Tag | BeautifulSoup, selector: str) -> Tag | None:
+    """Ищет элемент по селектору. Пустая строка значит «такого поля нет на сайте»."""
+    return node.select_one(selector) if selector else None
 
 # ---------------------------------------------------------------- модель
 
@@ -110,26 +132,32 @@ def text_of(node: Tag | None) -> str:
     return " ".join(node.get_text(" ", strip=True).split()) if node else ""
 
 
-def parse_page(html: str, base_url: str) -> list[Product]:
-    """Достаёт товары с одной страницы."""
+def parse_page(html: str, base_url: str, selectors: dict) -> list[Product]:
+    """Достаёт товары с одной страницы, используя селекторы сайта."""
     soup = BeautifulSoup(html, "html.parser")
     products: list[Product] = []
 
-    for card in soup.select(SELECTORS["card"]):
-        title_node = card.select_one(SELECTORS["title"])
-        price_node = card.select_one(SELECTORS["price"])
-        link_node = card.select_one(SELECTORS["link"])
-        rating_node = card.select_one(SELECTORS["rating"])
-        stock_node = card.select_one(SELECTORS["availability"])
+    card_selector = selectors.get("card") or ""
+    if not card_selector:
+        return products
+
+    for card in soup.select(card_selector):
+        title_node = pick(card, selectors.get("title", ""))
+        price_node = pick(card, selectors.get("price", ""))
+        link_node = pick(card, selectors.get("link", ""))
+        rating_node = pick(card, selectors.get("rating", ""))
+        stock_node = pick(card, selectors.get("availability", ""))
 
         title = ""
         if title_node:
-            if SELECTORS["title_attr"]:
-                title = title_node.get(SELECTORS["title_attr"], "")
+            attr = selectors.get("title_attr") or ""
+            if attr:
+                title = title_node.get(attr, "")
             title = title or text_of(title_node)
 
         price_text = text_of(price_node)
-        href = link_node.get(SELECTORS["link_attr"], "") if link_node else ""
+        link_attr = selectors.get("link_attr") or "href"
+        href = link_node.get(link_attr, "") if link_node else ""
 
         rating = None
         if rating_node:
@@ -152,9 +180,9 @@ def parse_page(html: str, base_url: str) -> list[Product]:
     return products
 
 
-def next_page_url(html: str, base_url: str) -> str | None:
+def next_page_url(html: str, base_url: str, selectors: dict) -> str | None:
     soup = BeautifulSoup(html, "html.parser")
-    node = soup.select_one(SELECTORS["next_page"])
+    node = pick(soup, selectors.get("next_page", ""))
     if not node:
         return None
     href = node.get("href")
@@ -230,7 +258,8 @@ def summarize(products: list[Product]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Собирает цены с сайта в CSV и Excel")
-    parser.add_argument("--start-url", default=DEFAULT_START_URL, help="страница, с которой начать")
+    parser.add_argument("--config", default=None, help="JSON-конфиг сайта из папки configs/")
+    parser.add_argument("--start-url", default=None, help="страница, с которой начать (перекрывает конфиг)")
     parser.add_argument("--pages", type=int, default=3, help="сколько страниц обойти (по умолчанию 3)")
     parser.add_argument("--delay", type=float, default=1.0, help="пауза между запросами, сек")
     parser.add_argument("--out", default=None, help="имя файлов без расширения")
@@ -241,16 +270,23 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = build_parser().parse_args(argv)
 
+    config = load_config(args.config)
+    selectors = {**DEFAULT_SELECTORS, **(config.get("selectors") or {})}
+    start_url = args.start_url or config.get("start_url") or DEFAULT_START_URL
+
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     out_name = args.out or f"prices_{stamp}"
     out_dir = Path("output")
     out_dir.mkdir(exist_ok=True)
 
+    if config.get("name"):
+        LOG.info("Сайт: %s", config["name"])
+
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
 
     products: list[Product] = []
-    url: str | None = args.start_url
+    url: str | None = start_url
     page = 0
     started = time.perf_counter()
 
@@ -258,15 +294,15 @@ def main(argv: list[str] | None = None) -> int:
         page += 1
         LOG.info("Страница %s: %s", page, url)
         html = fetch(session, url)
-        found = parse_page(html, url)
+        found = parse_page(html, url, selectors)
         LOG.info("  найдено товаров: %s", len(found))
         products.extend(found)
-        url = next_page_url(html, url)
+        url = next_page_url(html, url, selectors)
         if url and page < args.pages:
             time.sleep(max(args.delay, 0))
 
     if not products:
-        LOG.error("Ничего не найдено. Проверь SELECTORS и стартовый URL.")
+        LOG.error("Ничего не найдено. Проверь селекторы в конфиге и стартовый URL.")
         return 1
 
     csv_path = out_dir / f"{out_name}.csv"

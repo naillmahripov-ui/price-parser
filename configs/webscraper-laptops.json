@@ -1,0 +1,15 @@
+{
+  "name": "webscraper.io — ноутбуки (тестовый магазин)",
+  "start_url": "https://webscraper.io/test-sites/e-commerce/allinone/computers/laptops",
+  "selectors": {
+    "card": ".product-wrapper",
+    "title": "a.title",
+    "title_attr": "title",
+    "price": "h4.price",
+    "link": "a.title",
+    "link_attr": "href",
+    "rating": "",
+    "availability": "",
+    "next_page": ""
+  }
+}

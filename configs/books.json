@@ -1,0 +1,15 @@
+{
+  "name": "books.toscrape.com — книги",
+  "start_url": "https://books.toscrape.com/",
+  "selectors": {
+    "card": "article.product_pod",
+    "title": "h3 a",
+    "title_attr": "title",
+    "price": "p.price_color",
+    "link": "h3 a",
+    "link_attr": "href",
+    "rating": "p.star-rating",
+    "availability": "p.instock.availability",
+    "next_page": "li.next a"
+  }
+}
